@@ -19,6 +19,6 @@ def read_json_file(request:Request):
         json_string = blob.download_as_text(encoding="utf-8")
         records = [json.loads(line) for line in json_string.strip().split('\n')]
         print(records[0:3])
-        return 200, f"Succesfully read file {file_name}"
+        return  f"Succesfully read file {file_name}", 200
     except Exception as e:
-        return 500, f"An error occurred while reading file {file_name}: {e}"
+        return f"An error occurred while reading file {file_name}: {e}", 500
