@@ -14,6 +14,7 @@ def read_json_file(request:Request):
 
     try:
         file_name = request.args.get("file_name")
+        print(file_name)
         bucket = GCS_client.bucket(RAW_DATA_BUCKET)
         blob = bucket.blob(file_name)
         json_string = blob.download_as_text(encoding="utf-8")
