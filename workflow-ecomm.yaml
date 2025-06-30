@@ -1,0 +1,117 @@
+main:
+  steps:
+    - log_message_details:
+        call: sys.log
+        args:
+          text: ${"Workflow triggered by Pub/Sub message."}
+          severity: INFO
+
+
+    - callCloudRun:
+        call: http.get 
+        args:
+            url: https://list-files-gcs-bucket-ecomm-raw-800589473358.us-central1.run.app
+            auth:
+                type: OIDC
+        result: response
+
+    - assignList:
+        assign:
+          - file_list: ${response.body}
+          - i : 0
+          - count: ${len(file_list)}
+
+    - loop_check:
+        switch:
+          - condition: ${i < count}
+            next: get_file_name
+        next: done
+
+    - get_file_name:
+        assign :
+            - file_name: ${file_list[i]}
+        next: WritetoStaging
+
+    - WritetoStaging:
+        call: http.get 
+        args:
+            url: ${"https://read-json-files-from-raw-data-bucket-ecomm-800589473358.us-central1.run.app?file_name=" + file_name}
+            auth:
+                type: OIDC
+                audience: https://read-json-files-from-raw-data-bucket-ecomm-800589473358.us-central1.run.app
+        result: response
+        next : Perform_SCD2_Merge
+
+    - Perform_SCD2_Merge:
+        call: googleapis.bigquery.v2.jobs.insert
+        args:
+            projectId: ${sys.get_env("PROJECT_ID")}
+            body:
+                configuration:
+                    query:
+                        useLegacySql: false
+                        query: |-
+                          MERGE gcp-workflows-463821.ecommerce_data.ecommerce_scd2_table AS T
+                          USING gcp-workflows-463821.ecommerce_data.ecommerce_staging_table AS S
+                            ON T.user_id = S.user_id AND T.is_current = TRUE
+                            WHEN MATCHED AND (T.action <> S.action) THEN
+                            UPDATE SET
+                                is_current = FALSE,
+                                effective_end_date = TIMESTAMP(S.timestamp)
+
+        result: mergeResponse
+        next: SCD2_Write_to_Historical_Table
+
+    - SCD2_Write_to_Historical_Table:
+        call: googleapis.bigquery.v2.jobs.insert
+        args:
+            projectId: ${sys.get_env("PROJECT_ID")}
+            body:
+                configuration:
+                    query:
+                        useLegacySql: false
+                        query: |-
+                            INSERT INTO gcp-workflows-463821.ecommerce_data.ecommerce_scd2_table
+                            SELECT
+                                user_id,
+                                action,
+                                timestamp,
+                                details,
+                                TIMESTAMP(timestamp) AS effective_start_date,
+                                TIMESTAMP('2099-12-31') AS effective_end_date, 
+                                TRUE AS is_current
+                            FROM gcp-workflows-463821.ecommerce_data.ecommerce_staging_table;
+
+        result: mergeResponse
+        next: copyObject
+
+    - copyObject:
+        call: googleapis.storage.v1.objects.copy
+        args:
+            sourceBucket: e-commerce-project-raw
+            sourceObject: ${file_name}
+            destinationBucket: e-commerce-project-archive
+            destinationObject: ${file_name}
+        result: copyResp
+        next: deleteSource
+
+    - deleteSource:
+        call: googleapis.storage.v1.objects.delete
+        args:
+            bucket: e-commerce-project-raw
+            object: ${file_name}
+        result: delResp
+        next : increment
+
+    - increment: 
+        assign:
+          - i: ${i + 1}
+        next: loop_check
+
+    - done:
+        return: "✅ All files processed one by one."
+
+
+
+
+
